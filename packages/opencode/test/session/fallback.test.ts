@@ -85,16 +85,16 @@ describe("fallback config validation", () => {
     expect(parsed.fallbacks).toBeUndefined()
   })
 
-  test("top-level config accepts fallbacks and fallback_cooldown_seconds", () => {
+  test("top-level config accepts fallbacks and cooldown_seconds", () => {
     const { ConfigParse } = require("../../src/config/parse")
     const { Info: ConfigInfo } = require("../../src/config/config")
     const parsed = ConfigParse.effectSchema(ConfigInfo, {
       model: "ollama/glm-5.1",
       fallbacks: ["opencode/glm-5.1"],
-      fallback_cooldown_seconds: 120,
+      cooldown_seconds: 120,
     }, "test")
     expect(parsed.fallbacks).toEqual(["opencode/glm-5.1"])
-    expect(parsed.fallback_cooldown_seconds).toBe(120)
+    expect(parsed.cooldown_seconds).toBe(120)
   })
 
   test("top-level config works without fallback fields", () => {

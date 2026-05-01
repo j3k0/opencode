@@ -85,7 +85,7 @@ const live: Layer.Layer<
     ): Effect.Effect<A, unknown> =>
       Effect.gen(function* () {
         const cfg = yield* config.get()
-        const cooldownSeconds = cfg.fallback_cooldown_seconds ?? 300
+        const cooldownSeconds = cfg.cooldown_seconds ?? 300
         const fallbacks = input.fallbacks ?? []
 
         if (fallbacks.length === 0) {
