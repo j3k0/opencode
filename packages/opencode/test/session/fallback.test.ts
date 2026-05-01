@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { CooldownManager } from "../../src/session/fallback"
+import { isRetryable, resolveFallback, CooldownManager } from "../../src/session/fallback"
+import type { FallbackEntry } from "../../src/session/fallback"
+import { MessageV2 } from "../../src/session/message-v2"
 
 describe("CooldownManager", () => {
   test("isCooledDown returns false when no cooldown has been set", () => {
@@ -38,10 +40,6 @@ describe("CooldownManager", () => {
     expect(manager.isCooledDown("opencode-go", "glm-5.1")).toBe(false)
   })
 })
-
-import { isRetryable, resolveFallback, CooldownManager } from "../../src/session/fallback"
-import type { FallbackEntry } from "../../src/session/fallback"
-import { MessageV2 } from "../../src/session/message-v2"
 
 describe("isRetryable", () => {
   test("returns false for context overflow errors", () => {
