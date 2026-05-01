@@ -38,3 +38,75 @@ describe("CooldownManager", () => {
     expect(manager.isCooledDown("opencode-go", "glm-5.1")).toBe(false)
   })
 })
+
+import { isRetryable, resolveFallback, CooldownManager } from "../../src/session/fallback"
+import type { FallbackEntry } from "../../src/session/fallback"
+import { MessageV2 } from "../../src/session/message-v2"
+
+describe("isRetryable", () => {
+  test("returns false for context overflow errors", () => {
+    const error = new MessageV2.ContextOverflowError({ message: "" }).toObject()
+    expect(isRetryable(error)).toBe(false)
+  })
+
+  test("returns true for 5xx status codes", () => {
+    const error = new MessageV2.APIError({
+      statusCode: 503,
+      isRetryable: false,
+      responseHeaders: {},
+      responseBody: "Service Unavailable",
+      message: "Service Unavailable",
+      metadata: {},
+    }).toObject()
+    expect(isRetryable(error)).toBe(true)
+  })
+
+  test("returns true for 429 status codes", () => {
+    const error = new MessageV2.APIError({
+      statusCode: 429,
+      isRetryable: true,
+      responseHeaders: {},
+      responseBody: "Too Many Requests",
+      message: "Too Many Requests",
+      metadata: {},
+    }).toObject()
+    expect(isRetryable(error)).toBe(true)
+  })
+
+  test("returns false for non-retryable API errors", () => {
+    const error = new MessageV2.APIError({
+      statusCode: 401,
+      isRetryable: false,
+      responseHeaders: {},
+      responseBody: "Unauthorized",
+      message: "Unauthorized",
+      metadata: {},
+    }).toObject()
+    expect(isRetryable(error)).toBe(false)
+  })
+})
+
+describe("resolveFallback", () => {
+  const chain: FallbackEntry[] = [
+    { providerID: "opencode-go", modelID: "glm-5.1" },
+    { providerID: "deepseek", modelID: "deepseek-v4-flash" },
+  ]
+
+  test("returns first fallback when no cooldowns active", () => {
+    const cooldown = new CooldownManager()
+    expect(resolveFallback(chain, cooldown)).toEqual(chain[0])
+  })
+
+  test("skips cooled-down fallbacks", () => {
+    const cooldown = new CooldownManager()
+    cooldown.put("opencode-go", "glm-5.1", 60000)
+    expect(resolveFallback(chain, cooldown)).toEqual(chain[1])
+  })
+
+  test("returns undefined when all fallbacks are cooled down", () => {
+    const cooldown = new CooldownManager()
+    cooldown.put("opencode-go", "glm-5.1", 60000)
+    cooldown.put("deepseek", "deepseek-v4-flash", 60000)
+    expect(resolveFallback(chain, cooldown)).toBeUndefined()
+  })
+})

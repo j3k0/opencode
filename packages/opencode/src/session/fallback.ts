@@ -24,4 +24,23 @@ export class CooldownManager {
   }
 }
 
+import { SessionRetry } from "./retry"
+import type { Err } from "./retry"
+
+export type FallbackEntry = {
+  providerID: string
+  modelID: string
+}
+
+export function isRetryable(error: Err): boolean {
+  return SessionRetry.retryable(error) !== undefined
+}
+
+export function resolveFallback(
+  fallbacks: FallbackEntry[],
+  cooldown: CooldownManager,
+): FallbackEntry | undefined {
+  return fallbacks.find((f) => !cooldown.isCooledDown(f.providerID, f.modelID))
+}
+
 
