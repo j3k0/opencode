@@ -1450,6 +1450,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const cfg = yield* config.get()
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1461,6 +1462,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
+              fallbacks: agent.fallbacks ?? (cfg.fallbacks ? cfg.fallbacks.map((f: string) => Provider.parseModel(f)) : undefined),
             })
 
             if (structured !== undefined) {
