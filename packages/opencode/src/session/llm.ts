@@ -1,6 +1,6 @@
 import { Provider } from "@/provider/provider"
 import * as Log from "@opencode-ai/core/util/log"
-import { Context, Effect, Layer, Record } from "effect"
+import { Context, Effect, Layer, Record, Exit, Cause } from "effect"
 import * as Stream from "effect/Stream"
 import { streamText, wrapLanguageModel, type ModelMessage, type Tool, tool, jsonSchema } from "ai"
 import { mergeDeep } from "remeda"
@@ -24,8 +24,12 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { CooldownManager, isRetryable } from "./fallback"
+import * as SessionRetry from "./retry"
+import { ProviderID, ModelID } from "@/provider/schema"
 
 const log = Log.create({ service: "llm" })
+const cooldown = new CooldownManager()
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 type Result = Awaited<ReturnType<typeof streamText>>
 
@@ -74,6 +78,79 @@ const live: Layer.Layer<
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
 
+    const withFallback = <A>(
+      input: StreamRequest,
+      call: (model: Provider.Model, providerID: string, modelID: string) => Effect.Effect<A>,
+      l: ReturnType<typeof log.clone>,
+    ): Effect.Effect<A, unknown> =>
+      Effect.gen(function* () {
+        const cfg = yield* config.get()
+        const cooldownSeconds = cfg.fallback_cooldown_seconds ?? 300
+        const fallbacks = input.fallbacks ?? []
+
+        if (fallbacks.length === 0) {
+          return yield* call(input.model, input.model.providerID, input.model.id)
+        }
+
+        const chain: Array<{ providerID: string; modelID: string }> = [
+          { providerID: input.model.providerID, modelID: input.model.id },
+          ...fallbacks,
+        ]
+
+        let lastError: unknown = new Error("Fallback chain exhausted with no errors")
+
+        for (let i = 0; i < chain.length; i++) {
+          const entry = chain[i]
+
+          if (i > 0 && cooldown.isCooledDown(entry.providerID, entry.modelID)) {
+            l.info("skipping cooled-down fallback", { providerID: entry.providerID, modelID: entry.modelID })
+            continue
+          }
+
+          let model: Provider.Model
+          if (i === 0) {
+            model = input.model
+          } else {
+            const resolved = yield* provider.getModel(ProviderID.make(entry.providerID), ModelID.make(entry.modelID))
+              .pipe(Effect.option)
+            if (!Option.isSome(resolved)) {
+              l.info("fallback model not found, skipping", { providerID: entry.providerID, modelID: entry.modelID })
+              continue
+            }
+            model = resolved.value
+          }
+
+          const result = yield* Effect.exit(call(model, entry.providerID, entry.modelID))
+
+          if (Exit.isSuccess(result)) {
+            if (i > 0) cooldown.clear(entry.providerID, entry.modelID)
+            return result.value
+          }
+
+          const error = Cause.squash(result.cause)
+          if (!isRetryable(error as SessionRetry.Err)) {
+            l.info("non-retryable error, skipping fallbacks", { error: String(error) })
+            return yield* Effect.fail(error)
+          }
+
+          lastError = error
+          const retryAfter = (error as MessageV2.APIError)?.data?.responseHeaders?.["retry-after"]
+          let durationMs = cooldownSeconds * 1000
+          if (retryAfter) {
+            const parsedSec = Number.parseFloat(retryAfter)
+            if (!Number.isNaN(parsedSec)) durationMs = Math.ceil(parsedSec * 1000)
+          }
+          cooldown.put(entry.providerID, entry.modelID, durationMs)
+          l.info("retryable error, trying next fallback", {
+            providerID: entry.providerID,
+            modelID: entry.modelID,
+            cooldownMs: durationMs,
+          })
+        }
+
+        return yield* Effect.fail(lastError)
+      })
+
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
       const l = log
         .clone()
@@ -88,9 +165,9 @@ const live: Layer.Layer<
         providerID: input.model.providerID,
       })
 
-      const [language, cfg, item, info] = yield* Effect.all(
+      const language = yield* provider.getLanguage(input.model)
+      const [cfg, item, info] = yield* Effect.all(
         [
-          provider.getLanguage(input.model),
           config.get(),
           provider.getProvider(input.model.providerID),
           auth.get(input.model.providerID),
@@ -334,86 +411,92 @@ const live: Layer.Layer<
         ? (yield* InstanceState.context).project.id
         : undefined
 
-      return streamText({
-        onError(error) {
-          l.error("stream error", {
-            error,
-          })
-        },
-        async experimental_repairToolCall(failed) {
-          const lower = failed.toolCall.toolName.toLowerCase()
-          if (lower !== failed.toolCall.toolName && tools[lower]) {
-            l.info("repairing tool call", {
-              tool: failed.toolCall.toolName,
-              repaired: lower,
-            })
-            return {
-              ...failed.toolCall,
-              toolName: lower,
-            }
-          }
-          return {
-            ...failed.toolCall,
-            input: JSON.stringify({
-              tool: failed.toolCall.toolName,
-              error: failed.error.message,
-            }),
-            toolName: "invalid",
-          }
-        },
-        temperature: params.temperature,
-        topP: params.topP,
-        topK: params.topK,
-        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-        activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
-        tools,
-        toolChoice: input.toolChoice,
-        maxOutputTokens: params.maxOutputTokens,
-        abortSignal: input.abort,
-        headers: {
-          ...(input.model.providerID.startsWith("opencode")
-            ? {
-                "x-opencode-project": opencodeProjectID,
-                "x-opencode-session": input.sessionID,
-                "x-opencode-request": input.user.id,
-                "x-opencode-client": Flag.OPENCODE_CLIENT,
-                "User-Agent": `opencode/${InstallationVersion}`,
-              }
-            : {
-                "x-session-affinity": input.sessionID,
-                ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-                "User-Agent": `opencode/${InstallationVersion}`,
-              }),
-          ...input.model.headers,
-          ...headers,
-        },
-        maxRetries: input.retries ?? 0,
-        messages,
-        model: wrapLanguageModel({
-          model: language,
-          middleware: [
-            {
-              specificationVersion: "v3" as const,
-              async transformParams(args) {
-                if (args.type === "stream") {
-                  // @ts-expect-error
-                  args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
+      const tryProvider = (model: Provider.Model, providerID: string, _modelID: string) =>
+        Effect.gen(function* () {
+          const language = yield* provider.getLanguage(model)
+          return streamText({
+            onError(error) {
+              l.error("stream error", {
+                error,
+              })
+            },
+            async experimental_repairToolCall(failed) {
+              const lower = failed.toolCall.toolName.toLowerCase()
+              if (lower !== failed.toolCall.toolName && tools[lower]) {
+                l.info("repairing tool call", {
+                  tool: failed.toolCall.toolName,
+                  repaired: lower,
+                })
+                return {
+                  ...failed.toolCall,
+                  toolName: lower,
                 }
-                return args.params
+              }
+              return {
+                ...failed.toolCall,
+                input: JSON.stringify({
+                  tool: failed.toolCall.toolName,
+                  error: failed.error.message,
+                }),
+                toolName: "invalid",
+              }
+            },
+            temperature: params.temperature,
+            topP: params.topP,
+            topK: params.topK,
+            providerOptions: ProviderTransform.providerOptions(model, params.options),
+            activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
+            tools,
+            toolChoice: input.toolChoice,
+            maxOutputTokens: params.maxOutputTokens,
+            abortSignal: input.abort,
+            headers: {
+              ...(providerID.startsWith("opencode")
+                ? {
+                    "x-opencode-project": opencodeProjectID,
+                    "x-opencode-session": input.sessionID,
+                    "x-opencode-request": input.user.id,
+                    "x-opencode-client": Flag.OPENCODE_CLIENT,
+                    "User-Agent": `opencode/${InstallationVersion}`,
+                  }
+                : {
+                    "x-session-affinity": input.sessionID,
+                    ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+                    "User-Agent": `opencode/${InstallationVersion}`,
+                  }),
+              ...model.headers,
+              ...headers,
+            },
+            maxRetries: input.retries ?? 0,
+            messages,
+            model: wrapLanguageModel({
+              model: language,
+              middleware: [
+                {
+                  specificationVersion: "v3" as const,
+                  async transformParams(args) {
+                    if (args.type === "stream") {
+                      // @ts-expect-error
+                      args.params.prompt = ProviderTransform.message(args.params.prompt, model, options)
+                    }
+                    return args.params
+                  },
+                },
+              ],
+            }),
+            experimental_telemetry: {
+              isEnabled: cfg.experimental?.openTelemetry,
+              functionId: "session.llm",
+              tracer: telemetryTracer,
+              metadata: {
+                userId: cfg.username ?? "unknown",
+                sessionId: input.sessionID,
               },
             },
-          ],
-        }),
-        experimental_telemetry: {
-          isEnabled: cfg.experimental?.openTelemetry,
-          functionId: "session.llm",
-          tracer: telemetryTracer,
-          metadata: {
-            userId: cfg.username ?? "unknown",
-            sessionId: input.sessionID,
-          },
-        },
-      })
+          })
+        })
+
+      return yield* withFallback(input, tryProvider, l)
     })
 
     const stream: Interface["stream"] = (input) =>
