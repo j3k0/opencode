@@ -102,8 +102,8 @@ const live: Layer.Layer<
         for (let i = 0; i < chain.length; i++) {
           const entry = chain[i]
 
-          if (i > 0 && cooldown.isCooledDown(entry.providerID, entry.modelID)) {
-            l.info("skipping cooled-down fallback", { providerID: entry.providerID, modelID: entry.modelID })
+          if (cooldown.isCooledDown(entry.providerID, entry.modelID)) {
+            l.info("skipping cooled-down entry", { providerID: entry.providerID, modelID: entry.modelID })
             continue
           }
 
@@ -123,7 +123,6 @@ const live: Layer.Layer<
           const result = yield* Effect.exit(call(model, entry.providerID, entry.modelID))
 
           if (Exit.isSuccess(result)) {
-            if (i > 0) cooldown.clear(entry.providerID, entry.modelID)
             return result.value
           }
 
