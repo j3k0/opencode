@@ -9,7 +9,7 @@ import { ProviderTransform } from "@/provider/transform"
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import type { Agent } from "@/agent/agent"
-import type { MessageV2 } from "./message-v2"
+import { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@opencode-ai/core/flag/flag"
@@ -25,7 +25,6 @@ import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { CooldownManager, isRetryable } from "./fallback"
-import * as SessionRetry from "./retry"
 import { ProviderID, ModelID } from "@/provider/schema"
 
 const log = Log.create({ service: "llm" })
@@ -78,6 +77,21 @@ const live: Layer.Layer<
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
 
+    const cooldownDuration = (err: Record<string, any>, cooldownSeconds: number) => {
+      const headers = (err as any)?.data?.responseHeaders ?? {}
+      const retryAfterMs = headers["retry-after-ms"]
+      if (retryAfterMs) {
+        const parsed = Number.parseFloat(retryAfterMs)
+        if (!Number.isNaN(parsed)) return Math.ceil(parsed)
+      }
+      const retryAfter = headers["retry-after"]
+      if (retryAfter) {
+        const parsed = Number.parseFloat(retryAfter) * 1000
+        if (!Number.isNaN(parsed)) return Math.ceil(parsed)
+      }
+      return cooldownSeconds * 1000
+    }
+
     const withFallback = <A>(
       input: StreamRequest,
       call: (model: Provider.Model, providerID: string, modelID: string) => Effect.Effect<A>,
@@ -97,13 +111,15 @@ const live: Layer.Layer<
           ...fallbacks,
         ]
 
-        let lastError: unknown = new Error("Fallback chain exhausted with no errors")
+        let lastError: unknown
 
         for (let i = 0; i < chain.length; i++) {
           const entry = chain[i]
+          const el = l.clone().tag("providerID", entry.providerID).tag("modelID", entry.modelID)
 
+          if (input.abort.aborted) return yield* Effect.fail(new Error("Request aborted"))
           if (cooldown.isCooledDown(entry.providerID, entry.modelID)) {
-            l.info("skipping cooled-down entry", { providerID: entry.providerID, modelID: entry.modelID })
+            el.info("skipping cooled-down entry")
             continue
           }
 
@@ -114,7 +130,7 @@ const live: Layer.Layer<
             const resolved = yield* provider.getModel(ProviderID.make(entry.providerID), ModelID.make(entry.modelID))
               .pipe(Effect.option)
             if (!Option.isSome(resolved)) {
-              l.info("fallback model not found, skipping", { providerID: entry.providerID, modelID: entry.modelID })
+              el.info("fallback model not found, skipping")
               continue
             }
             model = resolved.value
@@ -122,32 +138,22 @@ const live: Layer.Layer<
 
           const result = yield* Effect.exit(call(model, entry.providerID, entry.modelID))
 
-          if (Exit.isSuccess(result)) {
-            return result.value
+          if (Exit.isSuccess(result)) return result.value
+
+          const err = MessageV2.fromError(Cause.squash(result.cause), { providerID: ProviderID.make(entry.providerID) })
+          lastError = err
+
+          if (!isRetryable(err)) {
+            el.info("non-retryable error, failing")
+            return yield* Effect.fail(err)
           }
 
-          const error = Cause.squash(result.cause)
-          if (!isRetryable(error as SessionRetry.Err)) {
-            l.info("non-retryable error, skipping fallbacks", { error: String(error) })
-            return yield* Effect.fail(error)
-          }
-
-          lastError = error
-          const retryAfter = (error as MessageV2.APIError)?.data?.responseHeaders?.["retry-after"]
-          let durationMs = cooldownSeconds * 1000
-          if (retryAfter) {
-            const parsedSec = Number.parseFloat(retryAfter)
-            if (!Number.isNaN(parsedSec)) durationMs = Math.ceil(parsedSec * 1000)
-          }
+          const durationMs = cooldownDuration(err, cooldownSeconds)
           cooldown.put(entry.providerID, entry.modelID, durationMs)
-          l.info("retryable error, trying next fallback", {
-            providerID: entry.providerID,
-            modelID: entry.modelID,
-            cooldownMs: durationMs,
-          })
+          el.info("retryable error, trying next fallback", { cooldownMs: durationMs })
         }
 
-        return yield* Effect.fail(lastError)
+        return yield* Effect.fail(lastError ?? new Error("All fallback entries skipped"))
       })
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {

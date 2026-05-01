@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { isRetryable, resolveFallback, CooldownManager } from "../../src/session/fallback"
-import type { FallbackEntry } from "../../src/session/fallback"
+import { CooldownManager } from "../../src/session/fallback"
 
 describe("CooldownManager", () => {
   test("isCooledDown returns false when no cooldown has been set", () => {
@@ -37,31 +36,6 @@ describe("CooldownManager", () => {
     const manager = new CooldownManager()
     manager.put("ollama", "glm-5.1", 60000)
     expect(manager.isCooledDown("opencode", "unknown")).toBe(false)
-  })
-})
-
-describe("resolveFallback", () => {
-  const chain: FallbackEntry[] = [
-    { providerID: "opencode", modelID: "glm-5.1" },
-    { providerID: "deepseek", modelID: "deepseek-v4" },
-  ]
-
-  test("returns first fallback when no cooldowns active", () => {
-    const cooldown = new CooldownManager()
-    expect(resolveFallback(chain, cooldown)).toEqual(chain[0])
-  })
-
-  test("skips cooled-down fallbacks", () => {
-    const cooldown = new CooldownManager()
-    cooldown.put("opencode", "glm-5.1", 60000)
-    expect(resolveFallback(chain, cooldown)).toEqual(chain[1])
-  })
-
-  test("returns undefined when all fallbacks are cooled down", () => {
-    const cooldown = new CooldownManager()
-    cooldown.put("opencode", "glm-5.1", 60000)
-    cooldown.put("deepseek", "deepseek-v4", 60000)
-    expect(resolveFallback(chain, cooldown)).toBeUndefined()
   })
 })
 

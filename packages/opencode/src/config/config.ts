@@ -148,7 +148,7 @@ export const Info = Schema.Struct({
   fallbacks: Schema.optional(Schema.mutable(Schema.Array(ConfigModelID))).annotate({
     description: "Fallback models to try when the primary model fails, in provider/model format",
   }),
-  cooldown_seconds: Schema.optional(Schema.Number).annotate({
+  cooldown_seconds: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))).annotate({
     description: "Duration in seconds to put a provider/model in cooldown after a retryable error (default: 300)",
   }),
   small_model: Schema.optional(ConfigModelID).annotate({

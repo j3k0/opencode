@@ -13,10 +13,11 @@ export class CooldownManager {
   }
 
   isCooledDown(providerID: string, modelID: string): boolean {
-    const expiry = this.store.get(this.key(providerID, modelID))
+    const k = this.key(providerID, modelID)
+    const expiry = this.store.get(k)
     if (expiry === undefined) return false
     if (Date.now() >= expiry) {
-      this.store.delete(this.key(providerID, modelID))
+      this.store.delete(k)
       return false
     }
     return true
@@ -34,11 +35,4 @@ export type FallbackEntry = {
 
 export function isRetryable(error: Err): boolean {
   return SessionRetry.retryable(error) !== undefined
-}
-
-export function resolveFallback(
-  fallbacks: FallbackEntry[],
-  cooldown: CooldownManager,
-): FallbackEntry | undefined {
-  return fallbacks.find((f) => !cooldown.isCooledDown(f.providerID, f.modelID))
 }
