@@ -1,3 +1,6 @@
+import { SessionRetry } from "./retry"
+import type { Err } from "./retry"
+
 export class CooldownManager {
   private store = new Map<string, number>()
 
@@ -24,9 +27,6 @@ export class CooldownManager {
   }
 }
 
-import { SessionRetry } from "./retry"
-import type { Err } from "./retry"
-
 export type FallbackEntry = {
   providerID: string
   modelID: string
@@ -42,5 +42,3 @@ export function resolveFallback(
 ): FallbackEntry | undefined {
   return fallbacks.find((f) => !cooldown.isCooledDown(f.providerID, f.modelID))
 }
-
-
