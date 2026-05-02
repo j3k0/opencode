@@ -24,8 +24,9 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { EffectBridge } from "@/effect/bridge"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
-import { CooldownManager, isRetryable } from "./fallback"
+import { CooldownManager, isRetryable, FallbackTriggered } from "./fallback"
 import { ProviderID, ModelID } from "@/provider/schema"
+import { SessionRetry } from "./retry"
 
 const log = Log.create({ service: "llm" })
 const cooldown = new CooldownManager()
@@ -67,7 +68,7 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/LL
 const live: Layer.Layer<
   Service,
   never,
-  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service
+  Auth.Service | Config.Service | Provider.Service | Plugin.Service | Permission.Service | Bus.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -76,6 +77,7 @@ const live: Layer.Layer<
     const provider = yield* Provider.Service
     const plugin = yield* Plugin.Service
     const perm = yield* Permission.Service
+    const bus = yield* Bus.Service
 
     const cooldownDuration = (err: Record<string, any>, cooldownSeconds: number) => {
       const headers = (err as any)?.data?.responseHeaders ?? {}
@@ -151,6 +153,13 @@ const live: Layer.Layer<
           const durationMs = cooldownDuration(err, cooldownSeconds)
           cooldown.put(entry.providerID, entry.modelID, durationMs)
           el.info("retryable error, trying next fallback", { cooldownMs: durationMs })
+          const reason = SessionRetry.retryable(err as unknown as SessionRetry.Err) ?? "error"
+          yield* bus.publish(FallbackTriggered, {
+            sessionID: SessionID.make(input.sessionID ?? ""),
+            modelID: ModelID.make(entry.modelID),
+            providerID: ProviderID.make(entry.providerID),
+            reason,
+          })
         }
 
         return yield* Effect.fail(lastError ?? new Error("All fallback entries skipped"))
