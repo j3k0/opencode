@@ -541,6 +541,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(Provider.defaultLayer),
     Layer.provide(Plugin.defaultLayer),
+    Layer.provide(Bus.defaultLayer),
   ),
 )
 
