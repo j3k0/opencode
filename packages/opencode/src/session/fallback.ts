@@ -1,3 +1,5 @@
+import { BusEvent } from "@/bus/bus-event"
+import { Schema } from "effect"
 import { SessionRetry } from "./retry"
 import type { Err } from "./retry"
 
@@ -36,3 +38,13 @@ export type FallbackEntry = {
 export function isRetryable(error: Err): boolean {
   return SessionRetry.retryable(error) !== undefined
 }
+
+export const FallbackTriggered = BusEvent.define(
+  "llm.fallback.triggered",
+  Schema.Struct({
+    sessionID: Schema.String,
+    modelID: Schema.String,
+    providerID: Schema.String,
+    reason: Schema.String,
+  }),
+)
