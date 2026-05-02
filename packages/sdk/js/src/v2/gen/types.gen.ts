@@ -359,6 +359,16 @@ export type EventSessionIdle = {
   }
 }
 
+export type EventLlmFallbackTriggered = {
+  type: "llm.fallback.triggered"
+  properties: {
+    sessionID: string
+    modelID: string
+    providerID: string
+    reason: string
+  }
+}
+
 export type EventSessionCompacted = {
   type: "session.compacted"
   properties: {
@@ -988,16 +998,6 @@ export type EventSessionDeleted = {
   }
 }
 
-export type EventLlmFallbackTriggered = {
-  type: "llm.fallback.triggered"
-  properties: {
-    sessionID: string
-    modelID: string
-    providerID: string
-    reason: string
-  }
-}
-
 export type SyncEventMessageUpdated = {
   type: "sync"
   name: "message.updated.1"
@@ -1142,6 +1142,7 @@ export type GlobalEvent = {
     | EventTodoUpdated
     | EventSessionStatus
     | EventSessionIdle
+    | EventLlmFallbackTriggered
     | EventSessionCompacted
     | EventTuiPromptAppend
     | EventTuiCommandExecute
@@ -1167,8 +1168,7 @@ export type GlobalEvent = {
     | EventMessagePartRemoved
     | EventSessionCreated
     | EventSessionUpdated
-  | EventSessionDeleted
-  | EventLlmFallbackTriggered
+    | EventSessionDeleted
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
     | SyncEventMessagePartUpdated
@@ -1279,6 +1279,10 @@ export type AgentConfig = {
    */
   maxSteps?: number
   permission?: PermissionConfig
+  /**
+   * Fallback models to try when the primary model fails, in provider/model format
+   */
+  fallbacks?: Array<string>
   [key: string]:
     | unknown
     | string
@@ -1303,6 +1307,7 @@ export type AgentConfig = {
     | "info"
     | number
     | PermissionConfig
+    | Array<string>
     | undefined
 }
 
@@ -1553,6 +1558,14 @@ export type Config = {
    * Model to use in the format of provider/model, eg anthropic/claude-2
    */
   model?: string
+  /**
+   * Fallback models to try when the primary model fails, in provider/model format
+   */
+  fallbacks?: Array<string>
+  /**
+   * Duration in seconds to put a provider/model in cooldown after a retryable error (default: 300)
+   */
+  cooldown_seconds?: number
   /**
    * Small model to use for tasks like title generation in the format of provider/model
    */
@@ -2086,6 +2099,7 @@ export type Event =
   | EventTodoUpdated
   | EventSessionStatus
   | EventSessionIdle
+  | EventLlmFallbackTriggered
   | EventSessionCompacted
   | EventTuiPromptAppend
   | EventTuiCommandExecute
@@ -2112,7 +2126,6 @@ export type Event =
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
-  | EventLlmFallbackTriggered
 
 export type McpStatusConnected = {
   status: "connected"
@@ -2194,6 +2207,10 @@ export type Agent = {
     providerID: string
   }
   variant?: string
+  fallbacks?: Array<{
+    providerID: string
+    modelID: string
+  }>
   prompt?: string
   options: {
     [key: string]: unknown
