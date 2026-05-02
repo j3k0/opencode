@@ -988,6 +988,16 @@ export type EventSessionDeleted = {
   }
 }
 
+export type EventLlmFallbackTriggered = {
+  type: "llm.fallback.triggered"
+  properties: {
+    sessionID: string
+    modelID: string
+    providerID: string
+    reason: string
+  }
+}
+
 export type SyncEventMessageUpdated = {
   type: "sync"
   name: "message.updated.1"
@@ -1157,7 +1167,8 @@ export type GlobalEvent = {
     | EventMessagePartRemoved
     | EventSessionCreated
     | EventSessionUpdated
-    | EventSessionDeleted
+  | EventSessionDeleted
+  | EventLlmFallbackTriggered
     | SyncEventMessageUpdated
     | SyncEventMessageRemoved
     | SyncEventMessagePartUpdated
@@ -2101,6 +2112,7 @@ export type Event =
   | EventSessionCreated
   | EventSessionUpdated
   | EventSessionDeleted
+  | EventLlmFallbackTriggered
 
 export type McpStatusConnected = {
   status: "connected"
