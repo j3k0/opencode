@@ -26,6 +26,7 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirServer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
+import { FallbackTriggered, FallbackUsed } from "../../src/session/fallback"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -57,6 +58,18 @@ const cfg = {
         "test-model": {
           id: "test-model",
           name: "Test Model",
+          attachment: false,
+          reasoning: false,
+          temperature: false,
+          tool_call: true,
+          release_date: "2025-01-01",
+          limit: { context: 100000, output: 10000 },
+          cost: { input: 0, output: 0 },
+          options: {},
+        },
+        "fallback-model": {
+          id: "fallback-model",
+          name: "Fallback Model",
           attachment: false,
           reasoning: false,
           temperature: false,
@@ -918,5 +931,99 @@ it.live("session.processor effect tests mark interruptions aborted without manua
         expect(state).toMatchObject({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor stream error with fallbacks triggers fallback", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const bus = yield* Bus.Service
+
+        // Primary model: stream error mid-response (invalid chunk causes SDK parse error)
+        yield* llm.push(raw({ head: [{ role: "assistant" }, 42] }))
+        // Fallback model: clean response
+        yield* llm.text("fallback response")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "fallback stream error")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+
+        const triggered: string[] = []
+        const used: string[] = []
+        const off1 = yield* bus.subscribeCallback(FallbackTriggered, (evt) => {
+          triggered.push(evt.properties.modelID)
+        })
+        const off2 = yield* bus.subscribeCallback(FallbackUsed, (evt) => {
+          used.push(evt.properties.modelID)
+        })
+
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "fallback stream error" }],
+          tools: {},
+          fallbacks: [{ providerID: ref.providerID, modelID: "fallback-model" as ModelID }],
+        })
+
+        off1()
+        off2()
+
+        // First call failed (stream error), fallback succeeded
+        expect(value).toBe("continue")
+        expect(yield* llm.calls).toBe(2)
+        expect(triggered.length).toBe(1)
+        expect(triggered[0]).toBe("test-model")
+        expect(used.length).toBe(1)
+        expect(used[0]).toBe("fallback-model")
+        expect(handle.message.error).toBeUndefined()
+      }),
+    { git: true, config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor stream error without fallbacks halts with error", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        yield* llm.push(raw({ head: [{ role: "assistant" }, 42] }))
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "no-fallback stream error")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const value = yield* handle.process({
+          user: { id: parent.id, sessionID: chat.id, role: "user", time: parent.time, agent: parent.agent, model: { providerID: ref.providerID, modelID: ref.modelID } } satisfies MessageV2.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "no-fallback stream error" }],
+          tools: {},
+        })
+        expect(value).toBe("stop")
+        expect(yield* llm.calls).toBe(1)
+        expect(handle.message.error).toBeDefined()
+      }),
+    { git: true, config: (url) => providerCfg(url) },
   ),
 )

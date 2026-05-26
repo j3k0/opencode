@@ -27,11 +27,13 @@ export type Event =
   | EventTodoUpdated
   | EventSessionStatus
   | EventSessionIdle
+  | EventLlmFallbackTriggered
+  | EventLlmFallbackUsed
+  | EventSessionCompacted
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventCommandExecuted
   | EventProjectUpdated
-  | EventSessionCompacted
   | EventVcsBranchUpdated
   | EventWorkspaceReady
   | EventWorkspaceFailed
@@ -479,6 +481,7 @@ export type TextPart = {
   text: string
   synthetic?: boolean
   ignored?: boolean
+  fallbackNotice?: "using" | "switch" | "resume"
   time?: {
     start: number
     end?: number
@@ -828,11 +831,13 @@ export type GlobalEvent = {
     | EventTodoUpdated
     | EventSessionStatus
     | EventSessionIdle
+    | EventLlmFallbackTriggered
+    | EventLlmFallbackUsed
+    | EventSessionCompacted
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventCommandExecuted
     | EventProjectUpdated
-    | EventSessionCompacted
     | EventVcsBranchUpdated
     | EventWorkspaceReady
     | EventWorkspaceFailed
@@ -1008,6 +1013,7 @@ export type AgentConfig = {
   steps?: number
   maxSteps?: number
   permission?: PermissionConfig
+  fallbacks?: Array<string>
   [key: string]:
     | unknown
     | string
@@ -1032,6 +1038,7 @@ export type AgentConfig = {
     | "info"
     | number
     | PermissionConfig
+    | Array<string>
     | undefined
 }
 
@@ -1217,6 +1224,11 @@ export type Config = {
   disabled_providers?: Array<string>
   enabled_providers?: Array<string>
   model?: string
+  fallbacks?: Array<string>
+  /**
+   * Duration in seconds to put a provider/model in cooldown after a retryable error (default: 300)
+   */
+  cooldown_seconds?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   small_model?: string
   default_agent?: string
   username?: string
@@ -1641,6 +1653,10 @@ export type Agent = {
     providerID: string
   }
   variant?: string
+  fallbacks?: Array<{
+    providerID: string
+    modelID: string
+  }>
   prompt?: string
   options: {
     [key: string]: unknown
@@ -2654,6 +2670,35 @@ export type EventSessionIdle = {
   }
 }
 
+export type EventLlmFallbackTriggered = {
+  id: string
+  type: "llm.fallback.triggered"
+  properties: {
+    sessionID: string
+    modelID: string
+    providerID: string
+    reason: string
+  }
+}
+
+export type EventLlmFallbackUsed = {
+  id: string
+  type: "llm.fallback.used"
+  properties: {
+    sessionID: string
+    modelID: string
+    providerID: string
+  }
+}
+
+export type EventSessionCompacted = {
+  id: string
+  type: "session.compacted"
+  properties: {
+    sessionID: string
+  }
+}
+
 export type EventMcpToolsChanged = {
   id: string
   type: "mcp.tools.changed"
@@ -2686,14 +2731,6 @@ export type EventProjectUpdated = {
   id: string
   type: "project.updated"
   properties: Project
-}
-
-export type EventSessionCompacted = {
-  id: string
-  type: "session.compacted"
-  properties: {
-    sessionID: string
-  }
 }
 
 export type EventVcsBranchUpdated = {
@@ -3241,104 +3278,6 @@ export type EventSessionNextCompactionEnded = {
   }
 }
 
-export type ModelV2Info = {
-  id: string
-  apiID: string
-  providerID: string
-  family?: string
-  name: string
-  endpoint:
-    | {
-        type: "unknown"
-      }
-    | {
-        type: "openai/responses"
-        url: string
-        websocket?: boolean
-      }
-    | {
-        type: "openai/completions"
-        url: string
-        reasoning?:
-          | {
-              type: "reasoning_content"
-            }
-          | {
-              type: "reasoning_details"
-            }
-      }
-    | {
-        type: "anthropic/messages"
-        url: string
-      }
-    | {
-        type: "aisdk"
-        package: string
-        url?: string
-      }
-  capabilities: {
-    tools: boolean
-    input: Array<string>
-    output: Array<string>
-  }
-  options: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    aisdk: {
-      provider: {
-        [key: string]: unknown
-      }
-      request: {
-        [key: string]: unknown
-      }
-    }
-    variant?: string
-  }
-  variants: Array<{
-    id: string
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    aisdk: {
-      provider: {
-        [key: string]: unknown
-      }
-      request: {
-        [key: string]: unknown
-      }
-    }
-  }>
-  time: {
-    released: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-  }
-  cost: Array<{
-    tier?: {
-      type: "context"
-      size: number
-    }
-    input: number
-    output: number
-    cache: {
-      read: number
-      write: number
-    }
-  }>
-  status: "alpha" | "beta" | "deprecated" | "active"
-  enabled: boolean
-  limit: {
-    context: number
-    input?: number
-    output: number
-  }
-}
-
 export type EventCatalogModelUpdated = {
   id: string
   type: "catalog.model.updated"
@@ -3511,6 +3450,9 @@ export type SessionMessageShell = {
 export type SessionMessageAssistantText = {
   type: "text"
   text: string
+  ignored?: boolean
+  synthetic?: boolean
+  fallbackNotice?: "using" | "switch" | "resume"
 }
 
 export type SessionMessageAssistantReasoning = {
@@ -3640,6 +3582,104 @@ export type SessionMessage =
   | SessionMessageAssistant
   | SessionMessageCompaction
 
+export type ModelV2Info = {
+  id: string
+  apiID: string
+  providerID: string
+  family?: string
+  name: string
+  endpoint:
+    | {
+        type: "unknown"
+      }
+    | {
+        type: "openai/responses"
+        url: string
+        websocket?: boolean
+      }
+    | {
+        type: "openai/completions"
+        url: string
+        reasoning?:
+          | {
+              type: "reasoning_content"
+            }
+          | {
+              type: "reasoning_details"
+            }
+      }
+    | {
+        type: "anthropic/messages"
+        url: string
+      }
+    | {
+        type: "aisdk"
+        package: string
+        url?: string
+      }
+  capabilities: {
+    tools: boolean
+    input: Array<string>
+    output: Array<string>
+  }
+  options: {
+    headers: {
+      [key: string]: string
+    }
+    body: {
+      [key: string]: unknown
+    }
+    aisdk: {
+      provider: {
+        [key: string]: unknown
+      }
+      request: {
+        [key: string]: unknown
+      }
+    }
+    variant?: string
+  }
+  variants: Array<{
+    id: string
+    headers: {
+      [key: string]: string
+    }
+    body: {
+      [key: string]: unknown
+    }
+    aisdk: {
+      provider: {
+        [key: string]: unknown
+      }
+      request: {
+        [key: string]: unknown
+      }
+    }
+  }>
+  time: {
+    released: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  cost: Array<{
+    tier?: {
+      type: "context"
+      size: number
+    }
+    input: number
+    output: number
+    cache: {
+      read: number
+      write: number
+    }
+  }>
+  status: "alpha" | "beta" | "deprecated" | "active"
+  enabled: boolean
+  limit: {
+    context: number
+    input?: number
+    output: number
+  }
+}
+
 export type ProviderV2Info = {
   id: string
   name: string
@@ -3715,104 +3755,6 @@ export type EventTuiToastShow1 = {
     message: string
     variant: "info" | "success" | "warning" | "error"
     duration?: number
-  }
-}
-
-export type ModelV2Info1 = {
-  id: string
-  apiID: string
-  providerID: string
-  family?: string
-  name: string
-  endpoint:
-    | {
-        type: "unknown"
-      }
-    | {
-        type: "openai/responses"
-        url: string
-        websocket?: boolean
-      }
-    | {
-        type: "openai/completions"
-        url: string
-        reasoning?:
-          | {
-              type: "reasoning_content"
-            }
-          | {
-              type: "reasoning_details"
-            }
-      }
-    | {
-        type: "anthropic/messages"
-        url: string
-      }
-    | {
-        type: "aisdk"
-        package: string
-        url?: string
-      }
-  capabilities: {
-    tools: boolean
-    input: Array<string>
-    output: Array<string>
-  }
-  options: {
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    aisdk: {
-      provider: {
-        [key: string]: unknown
-      }
-      request: {
-        [key: string]: unknown
-      }
-    }
-    variant?: string
-  }
-  variants: Array<{
-    id: string
-    headers: {
-      [key: string]: string
-    }
-    body: {
-      [key: string]: unknown
-    }
-    aisdk: {
-      provider: {
-        [key: string]: unknown
-      }
-      request: {
-        [key: string]: unknown
-      }
-    }
-  }>
-  time: {
-    released: number | "NaN" | "Infinity" | "-Infinity"
-  }
-  cost: Array<{
-    tier?: {
-      type: "context"
-      size: number
-    }
-    input: number
-    output: number
-    cache: {
-      read: number
-      write: number
-    }
-  }>
-  status: "alpha" | "beta" | "deprecated" | "active"
-  enabled: boolean
-  limit: {
-    context: number
-    input?: number
-    output: number
   }
 }
 
@@ -7457,7 +7399,7 @@ export type V2ModelListData = {
   body?: never
   path?: never
   query?: {
-    location?: {
+    instance?: {
       directory?: string
       workspace?: string
     }
@@ -7495,7 +7437,7 @@ export type V2ProviderListData = {
   body?: never
   path?: never
   query?: {
-    location?: {
+    instance?: {
       directory?: string
       workspace?: string
     }
@@ -7535,7 +7477,7 @@ export type V2ProviderGetData = {
     providerID: string
   }
   query?: {
-    location?: {
+    instance?: {
       directory?: string
       workspace?: string
     }
